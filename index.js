@@ -5,11 +5,13 @@ import mongodb from "mongodb";
 import dotenv from "dotenv";
 import joi from "joi";
 import dayjs from "dayjs";
+import cors from "cors";
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
+app.use(cors());
 
 const userSchema = joi.object({
   name: joi.string().required(),
@@ -32,29 +34,32 @@ mongoClient.connect().then(() => {
 async function removeUser() {
   const participants = await db.collection("participants").find({}).toArray();
   console.log("Chamou a funcao de remover");
-  await console.log(participants);
+  console.log(participants);
 
   for (let i = 0; i < participants.length; i++) {
     const participant = participants[i];
 
     let timeSinceLastStatus = Date.now() - participant.lastStatus;
     console.log(participant.name + " - " + timeSinceLastStatus);
+    try {
+      if (timeSinceLastStatus > 10000) {
+        await db
+          .collection("participants")
+          .deleteOne({ _id: new mongodb.ObjectId(participant._id) });
 
-    if (timeSinceLastStatus > 10000) {
-      await db
-        .collection("participants")
-        .deleteOne({ _id: new mongodb.ObjectId(participant._id) });
+        const messageToBeSaved = {
+          from: participant.name,
+          time: dayjs(new Date()).format("HH-mm-ss"),
+          text: "sai da sala ...",
+          to: "Todos",
+          type: "status",
+        };
 
-      const messageToBeSaved = {
-        from: participant.name,
-        time: dayjs(new Date()).format("HH-mm-ss"),
-        text: "sai da sala ...",
-        to: "Todos",
-        type: "status",
-      };
-
-      await db.collection("messages").insertOne({ ...messageToBeSaved });
-      console.log(`removeu ${participant.name}`);
+        await db.collection("messages").insertOne({ ...messageToBeSaved });
+        console.log(`removeu ${participant.name}`);
+      }
+    } catch (err) {
+      console.log(err);
     }
   }
 }
@@ -66,17 +71,24 @@ app.post("/participants", async (req, res) => {
 
   const validation = userSchema.validate(user, { abortEarly: true });
 
-  if (validation.error) {
-    console.log(validation.error.details.map((x) => x.message));
-    res.status(422).send({});
-  } else if (await db.collection("participants").findOne({ name: user.name })) {
-    res.status(409).send("nome repetido");
-  } else {
-    db.collection("participants").insertOne({
-      lastStatus: Date.now(),
-      ...user,
-    });
-    res.status(201).send("OK");
+  try {
+    if (validation.error) {
+      console.log(validation.error.details.map((x) => x.message));
+      res.status(422).send({});
+    } else if (
+      await db.collection("participants").findOne({ name: user.name })
+    ) {
+      res.status(409).send("nome repetido");
+    } else {
+      db.collection("participants").insertOne({
+        lastStatus: Date.now(),
+        ...user,
+      });
+      res.status(201).send("OK");
+    }
+  } catch (err) {
+    res.status(500).send("Deu ruim");
+    console.log(err);
   }
 });
 
@@ -87,73 +99,87 @@ app.get("/participants", async (req, res) => {
 
 app.post("/messages", async (req, res) => {
   // inserindo usuário
+  try {
+    const message = req.body;
+    const from = req.headers.user;
 
-  const message = req.body;
-  const from = req.headers.user;
+    const validation = messageSchema.validate(message, { abortEarly: true });
+    const hasName = await db.collection("participants").findOne({ name: from });
+    console.log(hasName);
 
-  const validation = messageSchema.validate(message, { abortEarly: true });
-  const hasName = await db.collection("participants").findOne({ name: from });
-  console.log(hasName);
+    const messageToBeSaved = {
+      from: from,
+      time: dayjs(new Date()).format("HH-mm-ss"),
+      ...message,
+    };
+    console.log(messageToBeSaved);
 
-  const messageToBeSaved = {
-    from: from,
-    time: dayjs(new Date()).format("HH-mm-ss"),
-    ...message,
-  };
-  console.log(messageToBeSaved);
-
-  if (validation.error) {
-    console.log(validation.error.details.map((x) => x.message));
-    res.status(422).send({});
-  } else if (!hasName) {
-    res.status(422).send("nome não está presente na lista");
-  } else {
-    db.collection("messages").insertOne({ ...messageToBeSaved });
-    res.status(201).send("OK");
+    if (validation.error) {
+      console.log(validation.error.details.map((x) => x.message));
+      res.status(422).send({});
+    } else if (!hasName) {
+      res.status(422).send("nome não está presente na lista");
+    } else {
+      db.collection("messages").insertOne({ ...messageToBeSaved });
+      res.status(201).send("OK");
+    }
+  } catch (err) {
+    res.status(500).send("Deu ruim");
+    console.log(err);
   }
 });
 
 app.get("/messages", async (req, res) => {
-  const messages = await db.collection("messages").find({}).toArray();
-  const limit = parseInt(req.query.limit);
-  const user = req.headers.user;
+  try {
+    const messages = await db.collection("messages").find({}).toArray();
+    const limit = parseInt(req.query.limit);
+    const user = req.headers.user;
 
-  const filteredMessages = messages.filter((x) => {
-    return (
-      x.from === user ||
-      x.to === user ||
-      x.type === "message" ||
-      x.type === "status"
-    );
-  });
+    const filteredMessages = messages.filter((x) => {
+      return (
+        x.from === user ||
+        x.to === user ||
+        x.type === "message" ||
+        x.type === "status"
+      );
+    });
 
-  if (filteredMessages.length <= limit) {
-    res.status(200).send(filteredMessages);
-  } else {
-    const newMessage = [];
-    for (let i = filteredMessages.length - 1; i >= 0; i--) {
-      newMessage.unshift(filteredMessages[i]);
-      if (newMessage.length === limit) break;
+    if (filteredMessages.length <= limit) {
+      res.status(200).send(filteredMessages);
+    } else {
+      const newMessage = [];
+      for (let i = filteredMessages.length - 1; i >= 0; i--) {
+        newMessage.unshift(filteredMessages[i]);
+        if (newMessage.length === limit) break;
+      }
+      res.status(200).send(newMessage);
     }
-    res.status(200).send(newMessage);
+  } catch (err) {
+    res.status(500).send("Deu ruim");
+    console.log(err);
   }
 });
 
 app.post("/status", async (req, res) => {
-  const user = req.headers.user;
-  const hasUser = await db.collection("participants").findOne({ name: user });
+  try {
+    const user = req.headers.user;
+    const hasUser = await db.collection("participants").findOne({ name: user });
 
-  const updateDoc = {
-    $set: {
-      lastStatus: Date.now(),
-    },
-  };
+    const updateDoc = {
+      $set: {
+        lastStatus: Date.now(),
+      },
+    };
 
-  if (!hasUser) {
-    res.status(404).send();
-  } else {
-    db.collection("participants").updateOne({ name: user }, updateDoc);
-    res.status(200).send();
+    if (!hasUser) {
+      res.status(404).send();
+    } else {
+      db.collection("participants").updateOne({ name: user }, updateDoc);
+      res.status(200).send();
+    }
+  } catch (err) {
+    res.status(500).send("Deu ruim");
+    console.log(err);
   }
 });
 
