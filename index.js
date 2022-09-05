@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import joi from "joi";
 import dayjs from "dayjs";
 import cors from "cors";
+import { stripHtml } from "string-strip-html";
 
 dotenv.config();
 
@@ -67,7 +68,8 @@ app.post("/participants", async (req, res) => {
   // inserindo usuário
 
   const user = req.body;
-  console.log(user);
+  user.name = stripHtml(user.name).result.trim();
+  console.log(user.name);
 
   const validation = userSchema.validate(user, { abortEarly: true });
 
@@ -101,11 +103,18 @@ app.post("/messages", async (req, res) => {
   // inserindo usuário
   try {
     const message = req.body;
-    const from = req.headers.user;
+    let from = req.headers.user;
+    console.log(message);
 
     const validation = messageSchema.validate(message, { abortEarly: true });
     const hasName = await db.collection("participants").findOne({ name: from });
     console.log(hasName);
+
+    // Satinitization
+    message.text = stripHtml(message.text).result.trim();
+    message.to = stripHtml(message.to).result.trim();
+    message.type = stripHtml(message.type).result.trim();
+    from = stripHtml(from).result.trim();
 
     const messageToBeSaved = {
       from: from,
@@ -181,6 +190,87 @@ app.post("/status", async (req, res) => {
     res.status(500).send("Deu ruim");
     console.log(err);
   }
+});
+
+app.delete("/messages/:id", async (req, res) => {
+  let { id } = req.params;
+
+  try {
+    const message = await db
+      .collection("messages")
+      .findOne({ _id: new mongodb.ObjectId(id) });
+
+    if (!message) {
+      res.status(404).send();
+    }
+    if (message.from !== req.headers.user) {
+      res.status(401).send();
+    }
+
+    await db
+      .collection("messages")
+      .deleteOne({ _id: new mongodb.ObjectId(id) });
+
+    console.log("deletou  " + id);
+    res.status(200).send();
+  } catch (err) {
+    res.status(500).send("Deu ruim");
+  }
+  // ...
+});
+
+app.put("/messages/:id", async (req, res) => {
+  // inserindo usuário
+  try {
+    const { id } = req.params;
+    const message = req.body;
+    let from = req.headers.user;
+    console.log(message);
+
+    const validation = messageSchema.validate(message, { abortEarly: true });
+    const hasName = await db.collection("participants").findOne({ name: from });
+    console.log(hasName);
+
+    // Satinitization
+    message.text = stripHtml(message.text).result.trim();
+    message.to = stripHtml(message.to).result.trim();
+    message.type = stripHtml(message.type).result.trim();
+    from = stripHtml(from).result.trim();
+
+    const messageToBeSaved = {
+      from: from,
+      time: dayjs(new Date()).format("HH-mm-ss"),
+      ...message,
+    };
+    console.log(messageToBeSaved);
+
+    if (validation.error) {
+      console.log(validation.error.details.map((x) => x.message));
+      res.status(422).send({});
+    } else if (!hasName) {
+      res.status(422).send("nome não está presente na lista");
+    } else {
+      const messageDb = await db
+        .collection("messages")
+        .findOne({ _id: new mongodb.ObjectId(id) });
+
+      if (!messageDb) {
+        res.status(404).send();
+      }
+      if (messageDb.from !== from) {
+        res.status(401).send();
+      } else {
+        await db.collection("messages").updateOne(
+          {
+            _id: new mongodb.ObjectId(id),
+          },
+          { $set: message }
+        );
+
+        res.sendStatus(200);
+      }
+    }
+  } catch (err) {}
 });
 
 setInterval(removeUser, 15000);
